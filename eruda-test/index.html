@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="theme-color" content="#171b1e">
+	<title>Key Lento</title>
+	<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+
+	<style>
+		* { box-sizing: border-box; }
+		html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+		body { background: #171b1e; color: #ede8de; font: 16px system-ui, sans-serif; }
+		#stage {
+			position: fixed;
+			inset: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+			touch-action: none;
+			-webkit-user-select: none;
+			user-select: none;
+		}
+		#canvas { width: 100%; height: 100%; display: block; outline: 0; image-rendering: pixelated; }
+		#launch, #rotate {
+			position: absolute;
+			inset: 0;
+			display: grid;
+			place-content: center;
+			justify-items: center;
+			gap: .8rem;
+			text-align: center;
+			background: #171b1e;
+			padding: 1rem;
+		}
+		#launch[hidden], #rotate { display: none; }
+		h1 { font-size: clamp(1.5rem, 5vw, 2.75rem); letter-spacing: .08em; margin: 0; }
+		button {
+			min-width: 9rem;
+			min-height: 44px;
+			border: 1px solid #ede8de;
+			border-radius: 0;
+			background: #ede8de;
+			color: #171b1e;
+			font: 650 1rem system-ui, sans-serif;
+			cursor: pointer;
+		}
+		button:focus-visible { outline: 2px solid #d5b67c; outline-offset: 4px; }
+		progress { width: min(16rem, 72vw); height: .45rem; accent-color: #d5b67c; }
+		#status-notice { max-width: 28rem; margin: 0; color: #e2c39d; }
+		@media (orientation: portrait) {
+			html.touch-device #rotate { display: grid; }
+		}
+	</style>
+	<script src="./debug/eruda.js"></script>
+	<script>
+		if (new URLSearchParams(location.search).get("debug") === "1") {
+			eruda.init({
+				tool: ["console", "network", "info"]
+			});
+		}
+	</script>
+</head>
+<body>
+	<main id="stage">
+		<canvas id="canvas" tabindex="0" aria-label="Key Lento 游戏画面"></canvas>
+		<section id="launch">
+			<h1>KEY LENTO</h1>
+			<button id="play" type="button">开始游戏</button>
+			<progress id="loading" aria-label="游戏加载进度" hidden></progress>
+			<p id="status-notice" role="alert" hidden></p>
+			<noscript>请启用 JavaScript 后重新打开页面。</noscript>
+		</section>
+		<div id="rotate" role="status">请将手机转为横屏</div>
+	</main>
+	<script src="index.js"></script>
+	<script>
+		const query = new URLSearchParams(location.search);
+		window.keyLentoTouch = query.get("touch") === "1"
+			|| matchMedia("(pointer: coarse) and (hover: none)").matches
+			|| /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
+			|| (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent));
+		document.documentElement.classList.toggle("touch-device", window.keyLentoTouch);
+		const canvas = document.getElementById("canvas");
+		const stage = document.getElementById("stage");
+		const launch = document.getElementById("launch");
+		const play = document.getElementById("play");
+		const loading = document.getElementById("loading");
+		const notice = document.getElementById("status-notice");
+		const engine = new Engine({"args":[],"canvasResizePolicy":0,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":5035956,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4});
+
+		function sizeCanvas() {
+			const scale = Math.min(devicePixelRatio || 1, 1.5);
+			const width = Math.max(1, Math.round(stage.clientWidth * scale));
+			const height = Math.max(1, Math.round(stage.clientHeight * scale));
+			if (canvas.width !== width) canvas.width = width;
+			if (canvas.height !== height) canvas.height = height;
+		}
+		new ResizeObserver(sizeCanvas).observe(stage);
+		sizeCanvas();
+		canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+		play.addEventListener("click", async () => {
+			if (play.disabled) return;
+			play.disabled = true;
+			play.hidden = true;
+			notice.hidden = true;
+			loading.hidden = false;
+			try {
+				const missing = Engine.getMissingFeatures({ threads: false });
+				if (missing.length) throw new Error("浏览器无法启动游戏：" + missing.join("、"));
+				await engine.startGame({
+					canvas,
+					args: window.keyLentoTouch ? ["--", "--touch-ui"] : [],
+					onProgress(loaded, total) {
+						if (total > 0) {
+							loading.max = total;
+							loading.value = Math.min(loaded, total);
+						}
+					}
+				});
+				launch.hidden = true;
+				canvas.focus({ preventScroll: true });
+			} catch (error) {
+				console.error(error);
+				notice.textContent = error.message || String(error);
+				notice.hidden = false;
+			} finally {
+				loading.hidden = true;
+			}
+		});
+	</script>
+</body>
+</html>
+
