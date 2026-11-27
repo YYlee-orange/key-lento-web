@@ -46,6 +46,7 @@
 		button:focus-visible { outline: 2px solid #d5b67c; outline-offset: 4px; }
 		progress { width: min(16rem, 72vw); height: .45rem; accent-color: #d5b67c; }
 		#status-notice { max-width: 28rem; margin: 0; color: #e2c39d; }
+		#open-standalone { color: #ede8de; font-size: .875rem; }
 		@media (orientation: portrait) {
 			html.touch-device #rotate { display: grid; }
 		}
@@ -59,6 +60,7 @@
 			<button id="play" type="button">开始游戏</button>
 			<progress id="loading" aria-label="游戏加载进度" hidden></progress>
 			<p id="status-notice" role="alert" hidden></p>
+			<a id="open-standalone" target="_blank" rel="noopener" hidden>在浏览器新标签页打开</a>
 			<noscript>请启用 JavaScript 后重新打开页面。</noscript>
 		</section>
 		<div id="rotate" role="status">请将手机转为横屏</div>
@@ -66,6 +68,7 @@
 	<script src="index.js"></script>
 	<script>
 		const query = new URLSearchParams(location.search);
+		window.keyLentoSafe = query.get("safe") === "1";
 		window.keyLentoTouch = query.get("touch") === "1"
 			|| matchMedia("(pointer: coarse) and (hover: none)").matches
 			|| /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
@@ -77,10 +80,19 @@
 		const play = document.getElementById("play");
 		const loading = document.getElementById("loading");
 		const notice = document.getElementById("status-notice");
-		const engine = new Engine({"args":[],"canvasResizePolicy":0,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":5035956,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4});
+		const standalone = document.getElementById("open-standalone");
+		const embedded = window.self !== window.top;
+		const wrappedByToy = location.hostname === "www.bilibilitoy.com";
+		standalone.href = location.href;
+		window.keyLentoStageReady = false;
+		let contextLost = false;
+		let retry = false;
 
 		function sizeCanvas() {
-			const scale = Math.min(devicePixelRatio || 1, 1.5);
+			const maxWidth = window.keyLentoSafe ? 640 : 960;
+			const maxHeight = window.keyLentoSafe ? 360 : 540;
+			const scale = Math.min(devicePixelRatio || 1, 1.5,
+				maxWidth / Math.max(1, stage.clientWidth), maxHeight / Math.max(1, stage.clientHeight));
 			const width = Math.max(1, Math.round(stage.clientWidth * scale));
 			const height = Math.max(1, Math.round(stage.clientHeight * scale));
 			if (canvas.width !== width) canvas.width = width;
@@ -89,19 +101,89 @@
 		new ResizeObserver(sizeCanvas).observe(stage);
 		sizeCanvas();
 		canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+		canvas.addEventListener("webglcontextlost", (event) => {
+			event.preventDefault();
+			// The engine's listener only opens a blocking alert. Keep the recovery UI usable.
+			event.stopImmediatePropagation();
+			contextLost = true;
+			showError("浏览器的 WebGL 画面已中断。");
+		}, { capture: true });
 
-		play.addEventListener("click", async () => {
+		function showError(message, canUseSafeMode = true) {
+			retry = canUseSafeMode;
+			launch.hidden = false;
+			loading.hidden = true;
+			notice.textContent = message;
+			notice.hidden = false;
+			play.textContent = canUseSafeMode
+				? (window.keyLentoSafe ? "重新加载" : "用兼容模式重试")
+				: "重新检测";
+			play.disabled = false;
+			play.hidden = false;
+			standalone.hidden = !embedded || wrappedByToy;
+		}
+
+		function prepareWebGL() {
+			// Match the Godot Compatibility export's canvas before the WASM renderer starts.
+			const attributes = {
+				alpha: false, depth: true, stencil: false, antialias: false,
+				premultipliedAlpha: true, preserveDrawingBuffer: true,
+				failIfMajorPerformanceCaveat: false
+			};
+			const preferences = window.keyLentoSafe
+				? ["low-power", "default", "high-performance"]
+				: ["default", "low-power", "high-performance"];
+			for (const powerPreference of preferences) {
+				let context;
+				try {
+					context = canvas.getContext("webgl2", { ...attributes, powerPreference });
+				} catch (error) {
+					console.warn("WebGL 2 context creation failed", error);
+				}
+				if (!context || context.isContextLost()) continue;
+				if (powerPreference !== "default") {
+					window.keyLentoSafe = true;
+					sizeCanvas();
+				}
+				return true;
+			}
+			return false;
+		}
+
+		async function startGame() {
 			if (play.disabled) return;
+			if (retry) {
+				const target = new URL(location.href);
+				target.searchParams.set("safe", "1");
+				location.replace(target);
+				return;
+			}
 			play.disabled = true;
 			play.hidden = true;
 			notice.hidden = true;
+			standalone.hidden = true;
 			loading.hidden = false;
 			try {
-				const missing = Engine.getMissingFeatures({ threads: false });
-				if (missing.length) throw new Error("浏览器无法启动游戏：" + missing.join("、"));
+				if (typeof Engine !== "function") throw new Error("缺少 index.js。请完整解压或重新上传网页包。");
+				if (!window.isSecureContext) {
+					showError("此页面需要通过 HTTPS 打开。", false);
+					return;
+				}
+				if (typeof WebAssembly !== "object" || typeof fetch !== "function") {
+					showError("当前浏览器缺少 WebAssembly 或 Fetch 支持，请更新浏览器后重试。", false);
+					return;
+				}
+				if (!prepareWebGL()) {
+					showError("当前页面无法创建 WebGL 2 图形环境。若从应用内打开，请复制试玩链接到系统浏览器。若已在 Chrome 或 Edge 中，请启用图形加速并重启浏览器。", false);
+					return;
+				}
+				const engine = new Engine({"args":[],"canvasResizePolicy":0,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":false,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":9119072,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4});
+				const gameArgs = [];
+				if (window.keyLentoTouch) gameArgs.push("--touch-ui");
+				if (window.keyLentoSafe) gameArgs.push("--web-safe");
 				await engine.startGame({
 					canvas,
-					args: window.keyLentoTouch ? ["--", "--touch-ui"] : [],
+					args: gameArgs.length ? ["--", ...gameArgs] : [],
 					onProgress(loaded, total) {
 						if (total > 0) {
 							loading.max = total;
@@ -109,16 +191,30 @@
 						}
 					}
 				});
+				loading.removeAttribute("value");
+				const deadline = performance.now() + 60000;
+				while (!window.keyLentoStageReady) {
+					if (contextLost) return;
+					if (performance.now() > deadline) throw new Error("场景初始化未完成，请刷新页面重试。");
+					await new Promise(requestAnimationFrame);
+				}
+				if (contextLost) return;
 				launch.hidden = true;
 				canvas.focus({ preventScroll: true });
 			} catch (error) {
 				console.error(error);
-				notice.textContent = error.message || String(error);
-				notice.hidden = false;
+				if (!contextLost) showError(error.message || String(error));
 			} finally {
 				loading.hidden = true;
 			}
-		});
+		}
+		if (location.protocol === "file:") {
+			play.hidden = true;
+			notice.textContent = "Windows 本地试玩请双击解压目录中的 Start_Local.cmd。网页部署请通过 HTTP 或 HTTPS 打开。";
+			notice.hidden = false;
+		} else {
+			play.addEventListener("click", startGame);
+		}
 	</script>
 </body>
 </html>
